@@ -1,0 +1,12 @@
+node_modules/
+.env
+playwright-report/
+test-results/
+reports/
+manual-results/
+.data/
+.data/register-phone-cooldown.json
+.data/register-phone-cooldown.json.lock
+.codex/
+.DS_Store
+tests/.DS_Store
