@@ -272,7 +272,7 @@ async function runSubscriptionOrderFlow(
   }
 
   if (!await runFlowStep(steps, 'clickRenew', () => clickRenew(page, options.env), {
-    locator: 'role=button/link name=/续费|Renew|Upgrade/',
+    locator: 'role=button/link name=/续费|变更订阅|Renew|Upgrade|Change Plan/',
   })) {
     return { steps, reachedPaymentMethodPage: false };
   }

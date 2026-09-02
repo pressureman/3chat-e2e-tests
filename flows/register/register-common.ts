@@ -595,8 +595,51 @@ function onboardingLocators(page: Page): Locator[] {
   ];
 }
 
-export async function waitForRegistrationOnboarding(page: Page, timeout = 30_000): Promise<void> {
+export async function waitForRegistrationOnboarding(
+  page: Page,
+  timeout = 30_000,
+  stabilizationMs = 0,
+): Promise<void> {
   await firstVisible(onboardingLocators(page), timeout);
+  if (stabilizationMs <= 0) return;
+
+  const marker = `e2e-onboarding-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const markerAttribute = 'data-e2e-onboarding-stability-marker';
+  let stableSince = Date.now();
+  let currentInput = await firstVisible(contactNameLocators(page), timeout);
+  const deadline = Date.now() + timeout;
+
+  await currentInput.evaluate(
+    (element, input) => element.setAttribute(input.attribute, input.marker),
+    { attribute: markerAttribute, marker },
+  );
+
+  while (Date.now() < deadline) {
+    const marked = page.locator(`[${markerAttribute}="${marker}"]`).first();
+    const markedStable = await marked.isVisible().catch(() => false)
+      && await marked.isEditable().catch(() => false);
+    if (markedStable) {
+      if (Date.now() - stableSince >= stabilizationMs) {
+        await marked.evaluate((element, attribute) => element.removeAttribute(attribute), markerAttribute)
+          .catch(() => undefined);
+        return;
+      }
+    } else {
+      currentInput = await firstVisible(contactNameLocators(page), Math.min(2_000, timeout));
+      await currentInput.evaluate(
+        (element, input) => element.setAttribute(input.attribute, input.marker),
+        { attribute: markerAttribute, marker },
+      );
+      stableSince = Date.now();
+    }
+
+    if (!await currentInput.isEditable().catch(() => false)) {
+      stableSince = Date.now();
+    }
+    await page.waitForTimeout(150);
+  }
+
+  throw new Error(`Onboarding input did not remain stable and editable for ${stabilizationMs}ms.`);
 }
 
 export type VerificationResult = 'onboarding' | 'confirm-register' | 'failed';
@@ -910,19 +953,79 @@ async function expectFieldValue(input: Locator, value: string, fieldName: string
   await expect(input).toHaveValue(value, { timeout: 5_000 });
 }
 
+const ONBOARDING_ACTION_TIMEOUT_MS = 5_000;
+const ONBOARDING_CONTACT_STABLE_MS = 750;
+const ONBOARDING_CONTACT_INPUT_ATTEMPTS = 2;
+
+async function contactNameValueRemainedStable(
+  page: Page,
+  expectedValue: string,
+  stableMs = ONBOARDING_CONTACT_STABLE_MS,
+  timeout = ONBOARDING_ACTION_TIMEOUT_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+  let stableSince: number | undefined;
+
+  while (Date.now() < deadline) {
+    const latestInput = await optionalVisible(contactNameLocators(page), 500);
+    const actualValue = await latestInput?.inputValue({ timeout: 1_000 }).catch(() => '') || '';
+    if (actualValue === expectedValue) {
+      stableSince ??= Date.now();
+      if (Date.now() - stableSince >= stableMs) return true;
+    } else {
+      stableSince = undefined;
+    }
+    await page.waitForTimeout(100);
+  }
+
+  return false;
+}
+
+async function typeStableContactName(
+  page: Page,
+  preferredInput: Locator,
+  value: string,
+): Promise<void> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < ONBOARDING_CONTACT_INPUT_ATTEMPTS; attempt += 1) {
+    const input = attempt === 0 && await preferredInput.isVisible().catch(() => false)
+      ? preferredInput
+      : await firstVisible(contactNameLocators(page), ONBOARDING_ACTION_TIMEOUT_MS);
+
+    try {
+      await focusOnboardingInput(page, input);
+      if (await input.inputValue({ timeout: 1_000 }).catch(() => '')) {
+        await input.press('ControlOrMeta+A', { timeout: ONBOARDING_ACTION_TIMEOUT_MS });
+        await input.press('Backspace', { timeout: ONBOARDING_ACTION_TIMEOUT_MS });
+      }
+      await input.pressSequentially(value, {
+        delay: 60,
+        timeout: ONBOARDING_ACTION_TIMEOUT_MS,
+      });
+      await input.press('Tab', { timeout: ONBOARDING_ACTION_TIMEOUT_MS });
+
+      if (await contactNameValueRemainedStable(page, value)) return;
+      lastError = new Error(`Contact name value was cleared after typing (attempt ${attempt + 1}).`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `Contact name did not remain stable after ${ONBOARDING_CONTACT_INPUT_ATTEMPTS} attempts. ${
+      lastError instanceof Error ? lastError.message : String(lastError || '')
+    }`,
+  );
+}
+
 async function fillContactNameAndWaitForWorkspace(
   page: Page,
   contactInput: Locator,
   contactName: string,
   timeout = 10_000,
 ): Promise<{ expanded: true }> {
-  await contactInput.fill(contactName);
-  await expect.poll(async () => {
-    const latestContactInput = await optionalVisible(contactNameLocators(page), 500);
-    return latestContactInput
-      ? latestContactInput.inputValue().catch(() => '')
-      : '';
-  }, { timeout: 5_000 }).toBe(contactName);
+  await typeStableContactName(page, contactInput, contactName);
 
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -931,13 +1034,7 @@ async function fillContactNameAndWaitForWorkspace(
       const latestContactInput = await firstVisible(contactNameLocators(page), 5_000);
       const contactValue = await latestContactInput.inputValue().catch(() => '');
       if (contactValue !== contactName) {
-        await latestContactInput.fill(contactName);
-        await expect.poll(async () => {
-          const refreshedContactInput = await optionalVisible(contactNameLocators(page), 500);
-          return refreshedContactInput
-            ? refreshedContactInput.inputValue().catch(() => '')
-            : '';
-        }, { timeout: 5_000 }).toBe(contactName);
+        await typeStableContactName(page, latestContactInput, contactName);
       }
       return { expanded: true };
     }
@@ -949,13 +1046,7 @@ async function fillContactNameAndWaitForWorkspace(
         await page.waitForTimeout(150);
         continue;
       }
-      await latestContactInput.fill(contactName);
-      await expect.poll(async () => {
-        const refreshedContactInput = await optionalVisible(contactNameLocators(page), 500);
-        return refreshedContactInput
-          ? refreshedContactInput.inputValue().catch(() => '')
-          : '';
-      }, { timeout: 5_000 }).toBe(contactName);
+      await typeStableContactName(page, latestContactInput, contactName);
     }
     await page.waitForTimeout(150);
   }
@@ -985,22 +1076,7 @@ async function fillContactNameInExpandedForm(
   contactInput: Locator,
   contactName: string,
 ): Promise<void> {
-  await contactInput.fill(contactName);
-  await expect.poll(async () => {
-    const latestContactInput = await optionalVisible(contactNameLocators(page), 500);
-    return latestContactInput
-      ? latestContactInput.inputValue().catch(() => '')
-      : '';
-  }, { timeout: 5_000 }).toBe(contactName);
-
-  const latestContactInput = await firstVisible(contactNameLocators(page), 5_000);
-  await latestContactInput.press('Tab');
-  await expect.poll(async () => {
-    const refreshedContactInput = await optionalVisible(contactNameLocators(page), 500);
-    return refreshedContactInput
-      ? refreshedContactInput.inputValue().catch(() => '')
-      : '';
-  }, { timeout: 5_000 }).toBe(contactName);
+  await typeStableContactName(page, contactInput, contactName);
 }
 
 async function waitForWorkspaceAutoValueStable(
@@ -1023,13 +1099,7 @@ async function waitForWorkspaceAutoValueStable(
     const contactValue = await contactInput.inputValue().catch(() => '');
     const workspaceValue = (await workspaceInput.inputValue().catch(() => '')).trim();
     if (contactValue !== expectedContactName) {
-      await contactInput.fill(expectedContactName);
-      await expect.poll(async () => {
-        const refreshedContactInput = await optionalVisible(contactNameLocators(page), 500);
-        return refreshedContactInput
-          ? refreshedContactInput.inputValue().catch(() => '')
-          : '';
-      }, { timeout: 5_000 }).toBe(expectedContactName);
+      await typeStableContactName(page, contactInput, expectedContactName);
       previous = '';
       stableReads = 0;
       await page.waitForTimeout(150);
@@ -1056,7 +1126,7 @@ async function verifyAutoFilledWorkspace(
   expectedValue: string,
 ): Promise<void> {
   await expect(input).toHaveValue(expectedValue, { timeout: 5_000 });
-  await input.press('Tab');
+  await input.press('Tab', { timeout: ONBOARDING_ACTION_TIMEOUT_MS });
   await expect(input).toHaveValue(expectedValue, { timeout: 5_000 });
   if (await input.getAttribute('aria-invalid').catch(() => null) === 'true') {
     throw new Error('Auto-filled onboarding workspace is marked invalid.');
@@ -1109,7 +1179,7 @@ async function typeAndCommitOnboardingField(
 
   callbacks?.onDomVerified?.();
 
-  await input.press('Tab');
+  await input.press('Tab', { timeout: ONBOARDING_ACTION_TIMEOUT_MS });
   await expectFieldValue(input, value, fieldName);
 
   if (validationError && !await isRegistrationTerminalState(page)) {
@@ -1127,7 +1197,7 @@ async function typeAndCommitOnboardingField(
 async function clickOnboardingDone(page: Page): Promise<void> {
   const doneButton = await firstVisible(doneButtonLocators(page), 15_000);
   await expect(doneButton).toBeEnabled({ timeout: 10_000 });
-  await doneButton.click();
+  await doneButton.click({ timeout: ONBOARDING_ACTION_TIMEOUT_MS });
 }
 
 function isOnOnboardingRoute(page: Page): boolean {

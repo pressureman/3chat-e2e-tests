@@ -375,7 +375,7 @@ export async function clickRenew(page: Page, env: RuntimeEnv): Promise<Subscript
         message: `每次等待 ${RENEW_BUTTON_WAIT_MS / 1_000} 秒并重新访问订阅页面 ${RENEW_PAGE_RETRY_LIMIT} 次后，仍未找到续费按钮。`,
         issueType: 'RENEW_BUTTON_NOT_FOUND',
         metadata: {
-          locator: 'role=button/link name=/续费|Renew|Upgrade/',
+          locator: 'role=button/link name=/续费|变更订阅|Renew|Upgrade|Change Plan/',
           buttonSearchAttempts,
           pageRevisits,
           expectedSubscriptionUrl: billingUrl(env.version, subscriptionBillingRule.path),
@@ -402,7 +402,7 @@ export async function clickRenew(page: Page, env: RuntimeEnv): Promise<Subscript
       message: '续费按钮存在但不可用。',
       issueType: 'RENEW_BUTTON_DISABLED',
       metadata: {
-        locator: 'role=button/link name=/续费|Renew|Upgrade/',
+        locator: 'role=button/link name=/续费|变更订阅|Renew|Upgrade|Change Plan/',
         buttonSearchAttempts,
         pageRevisits,
       },
@@ -420,7 +420,7 @@ export async function clickRenew(page: Page, env: RuntimeEnv): Promise<Subscript
       : '点击续费后未进入创建账单页面。',
     issueType: clicked && (reachedCreateBill || reachedPaymentMethod) ? undefined : 'RENEW_CLICK_FAILED',
     metadata: {
-      locator: 'role=button/link name=/续费|Renew|Upgrade/',
+      locator: 'role=button/link name=/续费|变更订阅|Renew|Upgrade|Change Plan/',
       buttonSearchAttempts,
       pageRevisits,
       reachedCreateBill,

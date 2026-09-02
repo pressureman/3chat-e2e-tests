@@ -55,7 +55,7 @@ export const subscriptionBillingRule: SubscriptionBillingRule = {
   id: 'subscription-renew',
   name: '我的订阅页续费',
   path: '/user-hub/package/detail',
-  renewText: /^续费$|^去续费$|^Renew$|^Renew Subscription$|^Upgrade$/i,
+  renewText: /^续费$|^去续费$|^变更订阅$|^Renew$|^Renew Subscription$|^Upgrade$|^Change Plan$/i,
   defaultRiskLevel: 'P1',
 };
 

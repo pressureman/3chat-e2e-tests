@@ -144,7 +144,11 @@ export async function runEmailRegisterFlow(
     result.inputEmailCode = true;
 
     result.failureStep = '等待进入 onboarding';
-    await waitForRegistrationOnboarding(page);
+    await waitForRegistrationOnboarding(
+      page,
+      30_000,
+      options.env.version === 'intl' ? 3_000 : 0,
+    );
     result.passedCodeVerification = true;
     result.enteredOnboarding = true;
 
