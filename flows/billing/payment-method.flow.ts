@@ -90,9 +90,23 @@ export interface PaymentMethodAvailabilityResult {
   comparison: PaymentMethodSetComparison;
   missingExpected: PaymentMethod[];
   unexpectedVisible: PaymentMethod[];
-  issueType?: 'PAYMENT_METHOD_SET_MISMATCH';
+  readiness?: PaymentPageReadiness;
+  issueType?: 'PAYMENT_METHOD_SET_MISMATCH' | 'PAYMENT_PAGE_NOT_READY';
   message?: string;
 }
+
+export interface PaymentPageReadiness {
+  ready: boolean;
+  timedOut: boolean;
+  timeoutMs: number;
+  billIdReady: boolean;
+  serviceDurationReady: boolean;
+  seatCountReady: boolean;
+  totalReady: boolean;
+  expectedMethodsEnabled: boolean;
+}
+
+export const PAYMENT_PAGE_READY_TIMEOUT_MS = 10_000;
 
 export interface PaymentMethodResult {
   success: boolean;
@@ -304,6 +318,66 @@ function mapPaymentRadioState(state: Pick<PaymentRadioState, 'label' | 'value' |
 
 function uniqueValues<T>(values: T[]): T[] {
   return [...new Set(values)];
+}
+
+function positiveNumber(value: string | undefined): boolean {
+  if (!value) return false;
+  const parsed = Number(value.replace(/,/g, ''));
+  return Number.isFinite(parsed) && parsed > 0;
+}
+
+export function evaluatePaymentPageReadiness(
+  text: string,
+  methods: AvailablePaymentMethod[],
+  expectedMethods: PaymentMethod[],
+  timeoutMs: number,
+  timedOut: boolean,
+): PaymentPageReadiness {
+  const billId = text.match(/(?:Bill\s*ID|账单(?:编号|ID|号))\s*[:：]?\s*(?![-—])([A-Za-z0-9][A-Za-z0-9-]*)/i)?.[1];
+  const serviceDuration = text.match(/(?:Service\s*Duration|服务(?:时长|周期))\s*[:：]?\s*([\d,.]+)\s*(?:Day(?:\(s\)|s)?|天)/i)?.[1];
+  const seatCount = text.match(/(?:Number\s*of\s*Seats|席位(?:数量|数)?|账号(?:数量|数))\s*[:：]?\s*([\d,.]+)/i)?.[1];
+  const total = text.match(/(?:Total|总计|合计)\s*[:：]?\s*(?:[A-Z]{3}\s*)?([\d,.]+)/i)?.[1];
+  const expectedMethodsEnabled = expectedMethods.every((expected) => methods.some((method) => (
+    method.method === expected && method.found && method.visible && method.enabled
+  )));
+  const billIdReady = Boolean(billId);
+  const serviceDurationReady = positiveNumber(serviceDuration);
+  const seatCountReady = positiveNumber(seatCount);
+  const totalReady = positiveNumber(total);
+
+  return {
+    ready: billIdReady
+      && serviceDurationReady
+      && seatCountReady
+      && totalReady
+      && expectedMethodsEnabled,
+    timedOut,
+    timeoutMs,
+    billIdReady,
+    serviceDurationReady,
+    seatCountReady,
+    totalReady,
+    expectedMethodsEnabled,
+  };
+}
+
+async function paymentPageVisibleText(page: Page): Promise<string> {
+  const texts = await Promise.all(billingContexts(page).map((context) => (
+    visibleText(context, 3_000).catch(() => '')
+  )));
+  return texts.filter(Boolean).join(' ');
+}
+
+function paymentPageNotReadyMessage(readiness: PaymentPageReadiness): string {
+  const state = (ready: boolean) => ready ? '已就绪' : '未就绪';
+  return [
+    `支付页面在 ${readiness.timeoutMs / 1_000} 秒内未完成加载。`,
+    `Bill ID: ${state(readiness.billIdReady)}`,
+    `Service Duration: ${state(readiness.serviceDurationReady)}`,
+    `Number of Seats: ${state(readiness.seatCountReady)}`,
+    `Total: ${state(readiness.totalReady)}`,
+    `Expected payment methods enabled: ${state(readiness.expectedMethodsEnabled)}`,
+  ].join('\n');
 }
 
 async function locateTarget(
@@ -851,6 +925,45 @@ export async function verifyPaymentMethodAvailability(
     unexpectedVisible: comparison.unexpected,
     issueType: comparison.matched ? undefined : 'PAYMENT_METHOD_SET_MISMATCH',
     message: paymentMethodSetMessage(comparison),
+  };
+}
+
+export async function waitForPaymentMethodAvailability(
+  page: Page,
+  expectedMethods: PaymentMethod[],
+  timeoutMs = PAYMENT_PAGE_READY_TIMEOUT_MS,
+): Promise<PaymentMethodAvailabilityResult> {
+  const deadline = Date.now() + timeoutMs;
+  let lastResult = await verifyPaymentMethodAvailability(page, expectedMethods);
+  let lastText = await paymentPageVisibleText(page);
+  let readiness = evaluatePaymentPageReadiness(lastText, lastResult.methods, expectedMethods, timeoutMs, false);
+
+  while (!readiness.ready && Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, remainingMs)));
+    lastResult = await verifyPaymentMethodAvailability(page, expectedMethods);
+    lastText = await paymentPageVisibleText(page);
+    readiness = evaluatePaymentPageReadiness(lastText, lastResult.methods, expectedMethods, timeoutMs, false);
+  }
+
+  if (readiness.ready) {
+    return {
+      ...lastResult,
+      readiness,
+    };
+  }
+
+  readiness = {
+    ...readiness,
+    timedOut: true,
+  };
+  return {
+    ...lastResult,
+    success: false,
+    readiness,
+    issueType: 'PAYMENT_PAGE_NOT_READY',
+    message: paymentPageNotReadyMessage(readiness),
   };
 }
 

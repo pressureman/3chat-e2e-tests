@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { RuntimeEnv } from '../configs/env.cn';
 import {
   paymentMethodRules,
@@ -20,7 +22,8 @@ import {
   type SubscriptionFlowResult,
 } from '../flows/billing/subscription.flow';
 import {
-  verifyPaymentMethodAvailability,
+  PAYMENT_PAGE_READY_TIMEOUT_MS,
+  waitForPaymentMethodAvailability,
   verifyPaymentMethodBranch,
   type PaymentMethodAvailabilityResult,
   type PaymentMethodResult,
@@ -327,8 +330,22 @@ function paymentMethodSetStep(pathRule: PaymentPathRule, result: PaymentMethodAv
       availablePaymentMethods: result.methods,
       missingExpected: result.missingExpected,
       unexpectedVisible: result.unexpectedVisible,
+      paymentPageReadiness: result.readiness,
     },
   });
+}
+
+async function capturePaymentPageFailure(
+  page: NonNullable<ScenarioExecutionOptions<RuntimeEnv>['page']>,
+  runDir: string,
+  pathRule: PaymentPathRule,
+): Promise<string | undefined> {
+  const screenshotsDir = path.join(runDir, 'scenarios', 'subscription-payment', 'screenshots');
+  const screenshotPath = path.join(screenshotsDir, `${pathRule.id}-payment-method-failure.png`);
+  await fs.mkdir(screenshotsDir, { recursive: true }).catch(() => undefined);
+  return page.screenshot({ path: screenshotPath, fullPage: true })
+    .then(() => screenshotPath)
+    .catch(() => undefined);
 }
 
 function paymentStepsFromResult(pathRule: PaymentPathRule, result: PaymentMethodResult, durationMs: number): StepResult[] {
@@ -432,8 +449,21 @@ async function runPaymentPath(
   if (!orderFlow.reachedPaymentMethodPage) return steps;
 
   const paymentMethodSetStartedAt = Date.now();
-  const paymentMethodSet = await verifyPaymentMethodAvailability(page, pathRule.expectedPaymentMethods);
-  steps.push(paymentMethodSetStep(pathRule, paymentMethodSet, page.url(), Date.now() - paymentMethodSetStartedAt));
+  const paymentMethodSet = await waitForPaymentMethodAvailability(
+    page,
+    pathRule.expectedPaymentMethods,
+    PAYMENT_PAGE_READY_TIMEOUT_MS,
+  );
+  const paymentMethodSetResult = paymentMethodSetStep(
+    pathRule,
+    paymentMethodSet,
+    page.url(),
+    Date.now() - paymentMethodSetStartedAt,
+  );
+  if (!paymentMethodSet.success) {
+    paymentMethodSetResult.screenshot = await capturePaymentPageFailure(page, options.runDir, pathRule);
+  }
+  steps.push(paymentMethodSetResult);
   if (!paymentMethodSet.success) return steps;
 
   const startedAt = Date.now();
