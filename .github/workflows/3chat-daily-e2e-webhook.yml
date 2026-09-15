@@ -24,9 +24,21 @@ jobs:
             echo "Missing GROK_BOT_DAILY_WEBHOOK_URL or GROK_BOT_DAILY_WEBHOOK_AUTH secrets" >&2
             exit 1
           fi
-          # Panel labels the credential as Authorization header.
+          # Normalize WEBHOOK_AUTH to handle different secret formats:
+          # - "Bearer <token>" → use as-is
+          # - "Authorization: Bearer <token>" → strip prefix
+          # - raw token → add "Bearer " prefix
+          NORMALIZED="${WEBHOOK_AUTH}"
+          # Trim leading/trailing whitespace
+          NORMALIZED="$(echo "${NORMALIZED}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          # Strip "Authorization:" prefix if present (case-insensitive)
+          NORMALIZED="$(echo "${NORMALIZED}" | sed -E 's/^[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*//')"
+          # Add "Bearer " prefix if not present (case-insensitive)
+          if ! echo "${NORMALIZED}" | grep -qiE '^[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]'; then
+            NORMALIZED="Bearer ${NORMALIZED}"
+          fi
           code=$(curl -sS -o /tmp/webhook-body.txt -w "%{http_code}" -X POST \
-            -H "Authorization: ${WEBHOOK_AUTH}" \
+            -H "Authorization: ${NORMALIZED}" \
             -H "Content-Type: application/json" \
             -d '{"source":"github-actions","purpose":"3chat-daily-e2e"}' \
             "$WEBHOOK_URL")
