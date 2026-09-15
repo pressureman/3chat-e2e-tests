@@ -1,0 +1,39 @@
+# Fires Grok Bot "3Chat Daily E2E" via webhook at 05:00 Asia/Shanghai.
+# Secrets required (repo Actions secrets — do NOT invent values):
+#   GROK_BOT_DAILY_WEBHOOK_URL
+#   GROK_BOT_DAILY_WEBHOOK_AUTH  (Authorization header value from the Grok Bot routine panel)
+name: 3Chat Daily E2E webhook
+
+on:
+  schedule:
+    # 05:00 Asia/Shanghai = 21:00 UTC previous calendar day
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST Grok Bot webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.GROK_BOT_DAILY_WEBHOOK_URL }}
+          WEBHOOK_AUTH: ${{ secrets.GROK_BOT_DAILY_WEBHOOK_AUTH }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WEBHOOK_URL}" ] || [ -z "${WEBHOOK_AUTH}" ]; then
+            echo "Missing GROK_BOT_DAILY_WEBHOOK_URL or GROK_BOT_DAILY_WEBHOOK_AUTH secrets" >&2
+            exit 1
+          fi
+          # Panel labels the credential as Authorization header.
+          code=$(curl -sS -o /tmp/webhook-body.txt -w "%{http_code}" -X POST \
+            -H "Authorization: ${WEBHOOK_AUTH}" \
+            -H "Content-Type: application/json" \
+            -d '{"source":"github-actions","purpose":"3chat-daily-e2e"}' \
+            "$WEBHOOK_URL")
+          echo "HTTP $code"
+          head -c 500 /tmp/webhook-body.txt || true
+          echo
+          case "$code" in
+            2??) exit 0 ;;
+            *) exit 1 ;;
+          esac
