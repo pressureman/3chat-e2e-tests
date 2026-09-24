@@ -1,4 +1,4 @@
-# Fires Grok Bot "3Chat Daily E2E" via webhook at 05:00 Asia/Shanghai.
+# Fires Grok Bot "3Chat Daily E2E" via webhook at 05:17 Asia/Shanghai (off-minute to avoid GitHub Actions on-the-hour schedule delays).
 # Secrets required (repo Actions secrets — do NOT invent values):
 #   GROK_BOT_DAILY_WEBHOOK_URL
 #   GROK_BOT_DAILY_WEBHOOK_AUTH  (Authorization header value from the Grok Bot routine panel)
@@ -6,8 +6,8 @@ name: 3Chat Daily E2E webhook
 
 on:
   schedule:
-    # 05:00 Asia/Shanghai = 21:00 UTC previous calendar day
-    - cron: "0 21 * * *"
+    # 05:17 Asia/Shanghai = 21:17 UTC previous calendar day
+    - cron: "17 21 * * *"
   workflow_dispatch:
 
 jobs:
