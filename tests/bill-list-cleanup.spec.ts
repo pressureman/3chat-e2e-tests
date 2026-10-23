@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
+  cancelBillActionPattern,
   pendingPaymentStatusPattern,
   rowTextIndicatesPendingPayment,
 } from '../flows/billing/bill-list-cleanup.flow';
@@ -9,6 +10,12 @@ test('pending payment status pattern matches CN and intl labels', () => {
   expect(pendingPaymentStatusPattern.test('Pending Payment')).toBe(true);
   expect(pendingPaymentStatusPattern.test('pending payment')).toBe(true);
   expect(pendingPaymentStatusPattern.test('已支付')).toBe(false);
+});
+
+test('cancel bill action pattern matches CN 作废 and intl Cancel labels', () => {
+  expect(cancelBillActionPattern.test('作废')).toBe(true);
+  expect(cancelBillActionPattern.test('取消')).toBe(true);
+  expect(cancelBillActionPattern.test('Cancel')).toBe(true);
 });
 
 test('rowTextIndicatesPendingPayment ignores header-only rows', () => {

@@ -8,7 +8,7 @@ export const BILL_LIST_PATH = '/user-hub/bill/list';
 export const pendingPaymentStatusPattern = /待支付|Pending\s*Payment/i;
 const billListPagePattern = /账单|Bill|Invoice|待支付|Pending\s*Payment|已支付|Paid|已取消|Cancelled|Canceled/i;
 const moreActionPattern = /更多|More/i;
-const cancelActionPattern = /取消|Cancel/i;
+export const cancelBillActionPattern = /作废|取消|Cancel/i;
 const confirmButtonPattern = /^(?:确定|确认|Confirm|OK|Yes)$/i;
 
 const BILL_LIST_LOAD_TIMEOUT_MS = 30_000;
@@ -135,9 +135,9 @@ async function visibleCancelMenuItem(page: Page): Promise<Locator | null> {
   ];
   for (const surface of surfaces) {
     const item = await firstVisible([
-      surface.getByRole('menuitem', { name: cancelActionPattern }),
-      surface.getByRole('button', { name: cancelActionPattern }),
-      surface.locator('li, [role="menuitem"], button, a').filter({ hasText: cancelActionPattern }),
+      surface.getByRole('menuitem', { name: cancelBillActionPattern }),
+      surface.getByRole('button', { name: cancelBillActionPattern }),
+      surface.locator('li, [role="menuitem"], button, a').filter({ hasText: cancelBillActionPattern }),
     ]);
     if (item) return item;
   }
@@ -189,7 +189,7 @@ async function cancelPendingBillRow(page: Page, row: Locator): Promise<{
     return {
       success: false,
       issueType: 'PENDING_BILL_CANCEL_ACTION_NOT_FOUND',
-      message: '更多菜单中未找到 取消/Cancel 操作。',
+      message: '更多菜单中未找到 作废/取消/Cancel 操作。',
     };
   }
 
