@@ -28,6 +28,7 @@ import {
   type PaymentMethodAvailabilityResult,
   type PaymentMethodResult,
 } from '../flows/billing/payment-method.flow';
+import { cleanupPendingPaymentBills } from '../flows/billing/bill-list-cleanup.flow';
 import { loginWithPassword } from '../flows/login/password-login.flow';
 import type { RiskLevel, RunMode, ScenarioResult, StepDefinition, StepResult, StepStatus, StepType, Version } from './types';
 
@@ -94,6 +95,13 @@ export const subscriptionPaymentStepDefinitions = {
     type: 'checkpoint',
     defaultRiskLevel: 'P1',
     required: true,
+  },
+  cleanupPendingBills: {
+    id: 'cleanupPendingBills',
+    name: '清理待支付账单',
+    type: 'action',
+    defaultRiskLevel: 'P1',
+    required: false,
   },
 } as const satisfies Record<string, StepDefinition>;
 
@@ -464,11 +472,30 @@ async function runPaymentPath(
     paymentMethodSetResult.screenshot = await capturePaymentPageFailure(page, options.runDir, pathRule);
   }
   steps.push(paymentMethodSetResult);
-  if (!paymentMethodSet.success) return steps;
 
-  const startedAt = Date.now();
-  const paymentResult = await verifyPaymentMethodBranch(page, pathRule);
-  steps.push(...paymentStepsFromResult(pathRule, paymentResult, Date.now() - startedAt));
+  if (paymentMethodSet.success) {
+    const startedAt = Date.now();
+    const paymentResult = await verifyPaymentMethodBranch(page, pathRule);
+    steps.push(...paymentStepsFromResult(pathRule, paymentResult, Date.now() - startedAt));
+  }
+
+  if (orderFlow.reachedPaymentMethodPage) {
+    const cleanupStartedAt = Date.now();
+    const cleanupResult = await cleanupPendingPaymentBills(page, options.env);
+    steps.push(stepResult('cleanupPendingBills', stepStatus(cleanupResult.success), {
+      message: cleanupResult.message,
+      url: cleanupResult.url || page.url(),
+      durationMs: Date.now() - cleanupStartedAt,
+      issueType: cleanupResult.issueType,
+      metadata: {
+        paymentPathId: pathRule.id,
+        billingCycle: pathRule.billingCycle,
+        paymentMethod: pathRule.paymentMethod,
+        ...cleanupResult.metadata,
+      },
+    }));
+  }
+
   return steps;
 }
 
