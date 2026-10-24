@@ -1,6 +1,12 @@
 import type { Locator, Page } from '@playwright/test';
 import { billingUrl } from '../../configs/billing-rules';
 import type { RuntimeEnv } from '../../configs/env.cn';
+import {
+  billListHostIsVTable,
+  clickVTableCell,
+  scanVTablePendingCells,
+  type VTableCellAddress,
+} from './bill-list-vtable.flow';
 import { visibleText, type BillingContentContext } from './subscription.flow';
 
 export const BILL_LIST_PATH = '/user-hub/bill/list';
@@ -22,6 +28,8 @@ export type PendingBillCleanupIssueType =
   | 'PENDING_BILL_CANCEL_ACTION_NOT_FOUND'
   | 'PENDING_BILL_CANCEL_CONFIRM_FAILED'
   | 'PENDING_BILL_CANCEL_FAILED'
+  | 'PENDING_BILL_VTABLE_INSTANCE_NOT_FOUND'
+  | 'PENDING_BILL_VTABLE_MORE_CLICK_FAILED'
   | 'PENDING_BILLS_REMAINING';
 
 export interface PendingBillCleanupResult {
@@ -106,6 +114,74 @@ export async function collectPendingPaymentRows(context: BillingContentContext):
   return pending;
 }
 
+type PendingBillTargets = {
+  domRows: Locator[];
+  vtableMoreCells: VTableCellAddress[];
+  vtablePendingCount: number;
+  vtableHost: boolean;
+  vtableInstanceFound: boolean;
+  vtableMessage?: string;
+};
+
+async function collectPendingBillTargets(context: BillingContentContext): Promise<PendingBillTargets> {
+  const domRows = await collectPendingPaymentRows(context);
+  const vtableHost = await billListHostIsVTable(context);
+
+  if (!vtableHost) {
+    return {
+      domRows,
+      vtableMoreCells: [],
+      vtablePendingCount: 0,
+      vtableHost: false,
+      vtableInstanceFound: false,
+    };
+  }
+
+  const vtableScan = await scanVTablePendingCells(context);
+  return {
+    domRows,
+    vtableMoreCells: vtableScan.moreActionCells,
+    vtablePendingCount: vtableScan.pendingRowCount,
+    vtableHost: true,
+    vtableInstanceFound: vtableScan.instanceFound,
+    vtableMessage: vtableScan.message,
+  };
+}
+
+function pendingTargetsNeedWork(targets: PendingBillTargets): boolean {
+  if (targets.domRows.length > 0) return true;
+  if (!targets.vtableHost) return false;
+  if (!targets.vtableInstanceFound) return true;
+  return targets.vtableMoreCells.length > 0 || targets.vtablePendingCount > 0;
+}
+
+function pendingTargetsSignature(targets: PendingBillTargets): string {
+  const domPart = targets.domRows.length;
+  const vtablePart = targets.vtableHost
+    ? `${targets.vtableInstanceFound}:${targets.vtablePendingCount}:${targets.vtableMoreCells.length}`
+    : 'off';
+  return `${domPart}|${vtablePart}`;
+}
+
+async function remainingPendingBillCount(context: BillingContentContext): Promise<{
+  domCount: number;
+  vtablePendingCount: number;
+  vtableMoreCount: number;
+  vtableHost: boolean;
+  vtableInstanceFound: boolean;
+  vtableMessage?: string;
+}> {
+  const targets = await collectPendingBillTargets(context);
+  return {
+    domCount: targets.domRows.length,
+    vtablePendingCount: targets.vtablePendingCount,
+    vtableMoreCount: targets.vtableMoreCells.length,
+    vtableHost: targets.vtableHost,
+    vtableInstanceFound: targets.vtableInstanceFound,
+    vtableMessage: targets.vtableMessage,
+  };
+}
+
 async function firstVisible(candidates: Locator[]): Promise<Locator | null> {
   for (const candidate of candidates) {
     const target = candidate.first();
@@ -128,16 +204,19 @@ async function rowMoreAction(row: Locator): Promise<Locator | null> {
 
 async function visibleCancelMenuItem(page: Page): Promise<Locator | null> {
   const surfaces = [
+    page.locator('.vtable__menu-element--shown:visible, .vtable__menu-element:visible'),
     page.locator('.ant-dropdown:visible'),
     page.locator('[role="menu"]:visible'),
     page.locator('.ant-popover:visible'),
+    page.locator('[class*="menu"]:visible, [class*="dropdown"]:visible, [data-slot="content"]:visible'),
     page,
   ];
   for (const surface of surfaces) {
     const item = await firstVisible([
+      surface.locator('.vtable__menu-element__item').filter({ hasText: cancelBillActionPattern }),
       surface.getByRole('menuitem', { name: cancelBillActionPattern }),
       surface.getByRole('button', { name: cancelBillActionPattern }),
-      surface.locator('li, [role="menuitem"], button, a').filter({ hasText: cancelBillActionPattern }),
+      surface.locator('li, [role="menuitem"], button, a, .vtable__menu-element__item, [class*="menu-element__item"]').filter({ hasText: cancelBillActionPattern }),
     ]);
     if (item) return item;
   }
@@ -164,6 +243,49 @@ async function confirmCancelDialog(page: Page): Promise<boolean> {
   await dialog.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => undefined);
   await sleep(400);
   return true;
+}
+
+async function cancelPendingBillVTableCell(
+  page: Page,
+  context: BillingContentContext,
+  cell: VTableCellAddress,
+): Promise<{
+  success: boolean;
+  issueType?: PendingBillCleanupIssueType;
+  message?: string;
+}> {
+  const clicked = await clickVTableCell(page, context, cell);
+  if (!clicked) {
+    return {
+      success: false,
+      issueType: 'PENDING_BILL_VTABLE_MORE_CLICK_FAILED',
+      message: 'VTable 待支付账单行未能点击 更多/More 操作单元格。',
+    };
+  }
+
+  await sleep(300);
+
+  const cancelItem = await visibleCancelMenuItem(page);
+  if (!cancelItem) {
+    return {
+      success: false,
+      issueType: 'PENDING_BILL_CANCEL_ACTION_NOT_FOUND',
+      message: '更多菜单中未找到 作废/取消/Cancel 操作。',
+    };
+  }
+
+  await cancelItem.click({ timeout: 5_000 }).catch(() => undefined);
+  const confirmed = await confirmCancelDialog(page);
+  if (!confirmed) {
+    return {
+      success: false,
+      issueType: 'PENDING_BILL_CANCEL_CONFIRM_FAILED',
+      message: '取消账单后未找到可点击的确认按钮。',
+    };
+  }
+
+  await sleep(500);
+  return { success: true };
 }
 
 async function cancelPendingBillRow(page: Page, row: Locator): Promise<{
@@ -213,8 +335,8 @@ async function waitForStableBillList(context: BillingContentContext): Promise<vo
   let stableSince = 0;
 
   while (Date.now() < deadline) {
-    const pending = await collectPendingPaymentRows(context);
-    const signature = `${pending.length}:${await dataRows(context).count()}`;
+    const targets = await collectPendingBillTargets(context);
+    const signature = `${pendingTargetsSignature(targets)}:${await dataRows(context).count()}`;
     const loading = await listLoading(context);
 
     if (!loading && signature === lastSignature) {
@@ -267,10 +389,32 @@ export async function cleanupPendingPaymentBills(
 
   for (let pass = 0; pass < MAX_CANCEL_PASSES; pass += 1) {
     await waitForStableBillList(context);
-    const pendingRows = await collectPendingPaymentRows(context);
-    if (pendingRows.length === 0) break;
+    const targets = await collectPendingBillTargets(context);
 
-    for (const row of pendingRows) {
+    if (targets.vtableHost && !targets.vtableInstanceFound) {
+      return {
+        success: false,
+        url: page.url(),
+        visibleText: await visibleText(context, 1_500).catch(() => ''),
+        message: targets.vtableMessage || '账单列表为 VTable canvas，但无法绑定 __vtable__ 实例，无法确认待支付账单是否已清理。',
+        issueType: 'PENDING_BILL_VTABLE_INSTANCE_NOT_FOUND',
+        metadata: {
+          cancelledCount,
+          remainingPendingCount: Math.max(targets.vtablePendingCount, 1),
+          billListHost: 'vtable',
+        },
+      };
+    }
+
+    if (!pendingTargetsNeedWork(targets)) break;
+
+    const pendingBeforePass = Math.max(
+      targets.domRows.length,
+      targets.vtableMoreCells.length,
+      targets.vtablePendingCount,
+    );
+
+    for (const row of targets.domRows) {
       const cancelResult = await cancelPendingBillRow(page, row);
       if (!cancelResult.success) {
         lastFailure = {
@@ -280,8 +424,36 @@ export async function cleanupPendingPaymentBills(
           issueType: cancelResult.issueType || 'PENDING_BILL_CANCEL_FAILED',
           metadata: {
             cancelledCount,
-            pendingBeforePass: pendingRows.length,
+            pendingBeforePass,
             pass,
+            billListHost: targets.vtableHost ? 'vtable+dom' : 'dom',
+          },
+        };
+        continue;
+      }
+      cancelledCount += 1;
+      context = await findBillListContext(page);
+      await waitForStableBillList(context);
+    }
+
+    const vtableTargets = targets.vtableHost
+      ? (await collectPendingBillTargets(context)).vtableMoreCells
+      : [];
+
+    for (const cell of vtableTargets) {
+      const cancelResult = await cancelPendingBillVTableCell(page, context, cell);
+      if (!cancelResult.success) {
+        lastFailure = {
+          success: false,
+          url: page.url(),
+          message: cancelResult.message,
+          issueType: cancelResult.issueType || 'PENDING_BILL_CANCEL_FAILED',
+          metadata: {
+            cancelledCount,
+            pendingBeforePass,
+            pass,
+            billListHost: 'vtable',
+            vtableCell: cell,
           },
         };
         continue;
@@ -297,17 +469,41 @@ export async function cleanupPendingPaymentBills(
   }
 
   await waitForStableBillList(context);
-  const remaining = await collectPendingPaymentRows(context);
-  if (remaining.length > 0) {
+  const remaining = await remainingPendingBillCount(context);
+  const remainingPendingCount = remaining.vtableHost
+    ? Math.max(remaining.domCount, remaining.vtablePendingCount, remaining.vtableMoreCount)
+    : remaining.domCount;
+
+  if (remaining.vtableHost && !remaining.vtableInstanceFound) {
     return {
       success: false,
       url: page.url(),
       visibleText: await visibleText(context, 1_500).catch(() => ''),
-      message: `账单列表仍残留 ${remaining.length} 条待支付记录。`,
+      message: remaining.vtableMessage || '账单列表为 VTable canvas，但无法绑定 __vtable__ 实例，无法确认待支付账单是否已清理。',
+      issueType: 'PENDING_BILL_VTABLE_INSTANCE_NOT_FOUND',
+      metadata: {
+        cancelledCount,
+        remainingPendingCount: Math.max(remainingPendingCount, 1),
+        billListHost: 'vtable',
+        lastFailureIssueType: lastFailure?.issueType,
+      },
+    };
+  }
+
+  if (remainingPendingCount > 0) {
+    return {
+      success: false,
+      url: page.url(),
+      visibleText: await visibleText(context, 1_500).catch(() => ''),
+      message: `账单列表仍残留 ${remainingPendingCount} 条待支付记录。`,
       issueType: 'PENDING_BILLS_REMAINING',
       metadata: {
         cancelledCount,
-        remainingPendingCount: remaining.length,
+        remainingPendingCount,
+        domRemainingCount: remaining.domCount,
+        vtableRemainingCount: remaining.vtablePendingCount,
+        vtableMoreRemainingCount: remaining.vtableMoreCount,
+        billListHost: remaining.vtableHost ? 'vtable' : 'dom',
         lastFailureIssueType: lastFailure?.issueType,
       },
     };
@@ -323,6 +519,7 @@ export async function cleanupPendingPaymentBills(
     metadata: {
       cancelledCount,
       remainingPendingCount: 0,
+      billListHost: remaining.vtableHost ? 'vtable' : 'dom',
       recoveredAfterFailure: Boolean(lastFailure),
       lastFailureIssueType: lastFailure?.issueType,
     },
