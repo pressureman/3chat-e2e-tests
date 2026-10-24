@@ -35,3 +35,8 @@ test('vtable pending detection treats More action as pending bill', () => {
   expect(vtableRowLooksPending('120193 3Chat', 'Online', 'More')).toBe(true);
   expect(vtableRowLooksPending('119406 paid', 'Paid', 'Detail')).toBe(false);
 });
+
+test('vtable pending detection recognizes PENDING_PAID with empty Actions cell', () => {
+  expect(vtableRowLooksPending('120193 3Chat', 'PENDING_PAID', '')).toBe(true);
+  expect(vtableActionCellIsMore('')).toBe(false);
+});

@@ -204,16 +204,19 @@ async function rowMoreAction(row: Locator): Promise<Locator | null> {
 
 async function visibleCancelMenuItem(page: Page): Promise<Locator | null> {
   const surfaces = [
+    page.locator('.vtable__menu-element--shown:visible, .vtable__menu-element:visible'),
     page.locator('.ant-dropdown:visible'),
     page.locator('[role="menu"]:visible'),
     page.locator('.ant-popover:visible'),
+    page.locator('[class*="menu"]:visible, [class*="dropdown"]:visible, [data-slot="content"]:visible'),
     page,
   ];
   for (const surface of surfaces) {
     const item = await firstVisible([
+      surface.locator('.vtable__menu-element__item').filter({ hasText: cancelBillActionPattern }),
       surface.getByRole('menuitem', { name: cancelBillActionPattern }),
       surface.getByRole('button', { name: cancelBillActionPattern }),
-      surface.locator('li, [role="menuitem"], button, a').filter({ hasText: cancelBillActionPattern }),
+      surface.locator('li, [role="menuitem"], button, a, .vtable__menu-element__item, [class*="menu-element__item"]').filter({ hasText: cancelBillActionPattern }),
     ]);
     if (item) return item;
   }
